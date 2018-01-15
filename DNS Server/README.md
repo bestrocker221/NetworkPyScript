@@ -1,5 +1,7 @@
 # **DNS Server**
 
+*NB: I'm writing this in my free time, just to try, learn and improve.*
+
 ## Multi-threaded DNS Server
 
 *dns_server_mt.py* is a multi-threaded process based DNS server which serves UDP and TCP requests at the same time. Both UDP and TCP servers run on their own process and for each new DNS query a new thread is launched. 
@@ -13,7 +15,14 @@ NOTE: may not work properly for too many requests.
 ## Async DNS Server
 
 *dns_server_async.py* aims to be a high level asynchronous dns server. 
+It is based on three thread:
+* receiver thread
+* server forwarder thread
+* client forwarder thread
 
+and make use of Queue for passing/sharing requests/responses among threads.
+
+No other libraries used than Scapy.
 
 *Performance:* (evaluated with [dnsblast](https://github.com/jedisct1/dnsblast))
 * average 10 per second (Uncached)

@@ -1,6 +1,6 @@
 #! /usr/bin/python
 from scapy.all import *
-from threading import Thread, Event
+from threading import Thread
 from multiprocessing import Process
 import sys, datetime, signal, struct
 
