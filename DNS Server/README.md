@@ -8,10 +8,18 @@
 
 dns_server_mt.py was done first in order to get hands on DNS query requests and response.
 
+NOTE: may not work properly for too many requests.
 
 ## Async DNS Server
 
 *dns_server_async.py* aims to be a high level asynchronous dns server. 
+
+
+*Performance:* (evaluated with [dnsblast](https://github.com/jedisct1/dnsblast))
+* average 10 per second (Uncached)
+* average 21 per second (Cached)
+
+still very bad.
 
 
 ### **Installation**

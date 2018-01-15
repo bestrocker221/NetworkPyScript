@@ -8,8 +8,6 @@ from Queue import Queue
 
 DNS_SERVER = "8.8.8.8" 	#google dns
 cache = {}	#in-memory caching
-#new_query = {}
-#rcvd_query = {}
 
 def search_cache(hostname):	
 	if hostname in cache.keys():
@@ -32,23 +30,25 @@ class FWToServerThread(Thread):
 	def run(self):
 		while self.go:
 			try:
-				print("NEW QUERY IS EMPTY?: " + str(self.new_query.empty()))
 				if not self.new_query.empty():
-					print("NEW QUERY > 0")
-					for i in self.new_query.qsize():
+					for i in range(self.new_query.qsize()):
 						elem = self.new_query.get()
+						tid = elem["tid"]
 						qname = elem["qname"]
 						raw_dns_query = elem["raw"]
 						host_addr = elem["addr"]
-						dns_server_response = search_cache(qname)
+						dns_server_response = search_cache(qname) #search response in cache
 						if dns_server_response: 	#cached response
-							self.rcvd_query.put({"qname":qname, "raw":dns_server_response, "addr":host_addr})
+							#put response in to-send queue
+							self.rcvd_query.put({ "tid":tid,
+								"qname":qname, "raw":dns_server_response, "addr":host_addr})
 						else: 						#non cached
+							#Forward request directly to server
 							req = IP(dst=DNS_SERVER)/UDP(dport=53)/raw_dns_query
 							send(req, verbose=False)
-						elem.task_done()
+						self.new_query.task_done()
 				else:
-					sleep(2.01)
+					sleep(0.001) #avoid busy-waiting
 			except KeyboardInterrupt:
 				return
 			except Exception as e:
@@ -73,22 +73,24 @@ class FWToClientThread(Thread):
 	def run(self):
 		while self.go:
 			try:
-				print("RCV QUERY IS EMPTY?: " + str(self.rcvd_query.empty()))
-				if not self.rcvd_query.empty():
-					print("RCVD QUERY > 0")
-					for i in self.rcvd_query.qsize():
+				if not self.rcvd_query.empty(): 				#check to-send queue
+					for i in range(self.rcvd_query.qsize()): 	#send every pending response
 						elem = self.rcvd_query.get()
+						tid = elem["tid"]
 						qname = elem["qname"]
 						raw_dns_query = elem["raw"]
 						host_addr = elem["addr"]
-						msg = Ether()/IP(dst=host_addr[0])/UDP(sport=53,dport=host_addr[1])/raw_dns_query
+						raw_dns_query.id = tid
+						print("Sending " + qname + " RESPONSE to {} for {}".format(host_addr, qname))
+						msg = Ether()/IP(dst=host_addr[0])/\
+							UDP(sport=53,dport=host_addr[1])/raw_dns_query
 						try:
 							sendp(msg, verbose=False)
 						except Exception as e:
 							print("{}".format(e))
-						elem.task_done()
+						self.rcvd_query.task_done()
 				else:
-					sleep(2.01)
+					sleep(0.001) 	#avoid busy-waiting
 			except KeyboardInterrupt:
 				return
 			except Exception as e:
@@ -103,52 +105,63 @@ class FWToClientThread(Thread):
 #	"raw":raw,
 #	"addr": addr
 #}
-class UDPServerProcess(Process):
-	def __init__(self):
-		Process.__init__(self)
+class UDPServerProcess(Thread):
+	def __init__(self, new_query, rcvd_query, who_asked_what):
+		Thread.__init__(self)
 		self.server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+		self.server.settimeout(1)
 		self.server.bind(('192.168.1.88', 53))
 		self.BUFFER_SIZE = 1024
-		self.new_query = Queue()
-		self.rcvd_query = Queue()
+		self.new_query = new_query
+		self.rcvd_query = rcvd_query
+		self.who_asked_what = who_asked_what
 		self.server_fw__thread = FWToServerThread(self.new_query, self.rcvd_query)
 		self.client_fw_thread = FWToClientThread(self.new_query, self.rcvd_query)
 		self.server_fw__thread.start()
 		self.client_fw_thread.start()
 		print("UDP DNS server started on port 53")
+		self.go = True
 	
 	def terminate(self):
 		print("CLOSING UDP PROCESS")
 		self.client_fw_thread.stop()
 		self.server_fw__thread.stop()
-		super(UDPServerProcess, self).terminate()
+		self.go = False
+
+	def who_asked(self, qname):
+		elem = self.who_asked_what.get()
+		if "qname" in elem:
+			self.who_asked_what.task_done()
+			return elem["addr"]
+		else:
+			self.who_asked_what.put(elem)
+			raise Exception
 
 	def run(self):
-		while True:
+		while self.go:
 			try:
 				data, addr = self.server.recvfrom(self.BUFFER_SIZE)
-				if DNS_SERVER in addr[0]: 	#query FROM server? dischard
-					continue
 				data = DNS(data)
 				if data and data.haslayer(DNS):
 					qname = data.qd.qname
-					#data.show()
-					if data.qr == 1: #query response
+					tid = data.id
+					self.who_asked_what.put({"tid": tid, "qname":qname, "addr":addr})
+					if data.qr == 1: 							#query response
 						try:
 							print("UDP [" + str(addr[0]) + ":" + str(addr[1]) +"]" + " ANSWER FOR " 
 								+ str(data.qd.qname) + " --> " + str(data.an.rdata))
 						except AttributeError:
 							print("NONE TYPE ?? FOR " + data.qd.qname)
-						print("CACHING " +str(qname))
+						real_addr = self.who_asked(qname)
 						cache.update({qname:{"raw":data}})      #cache response in memory
-						self.rcvd_query.put({"qname":qname,"raw":data, "addr":addr}) #add new received query to dispatch
-						#print("now RCVD IS {}".format(self.rcvd_query))
-					elif data.qr == 0: #new query
+						self.rcvd_query.put({"tid":tid,			#add new received query to dispatch
+							"qname":qname,"raw":data, "addr":real_addr}) 
+					elif data.qr == 0: 							#new query
 						print("UDP [" + str(addr[0]) + ":" + str(addr[1]) +"]" + " REQUESTED: " + qname)
-						self.new_query.put({"qname":qname,"raw":data, "addr":addr}) 	#add new query to forward to server
-						print("ELEMENTO AGGIUNTO A NEW QUERY. SIZE: " + str(self.new_query.qsize()))
-						#print("NOW NEW QUERY IS : {}".format(self.new_query))
-
+						self.new_query.put({"tid": data.id, 	#add new query to forward to server
+							"qname":qname,"raw":data, "addr":addr}) 	
+			except socket.timeout:
+				continue
 			except AttributeError as a:
 				print("{}".format(a))
 			except KeyboardInterrupt:
@@ -163,12 +176,17 @@ def signal_handler(signal, frame):
 
 if __name__ == '__main__':
 	signal.signal(signal.SIGTERM, signal_handler)
-	srv = UDPServerProcess()
+	new_query = Queue()
+	rcvd_query = Queue()
+	who_asked_what = Queue()
+	srv = UDPServerProcess( new_query, rcvd_query, who_asked_what)
 	srv.start()
 	try:
-		srv.join()
+		while True:
+			sleep(1)
 	except KeyboardInterrupt:
 		if srv.is_alive():
 			srv.terminate()
+			srv.join()
 
 	print("CLOSING MAIN THREAD")
