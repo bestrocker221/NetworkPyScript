@@ -9,5 +9,24 @@
 dns_server_mt.py was done first in order to get hands on DNS query requests and response.
 
 
-##Async DNS Server
+## Async DNS Server
+
 *dns_server_async.py* aims to be a high level asynchronous dns server. 
+
+
+### **Installation**
+**pip - download latest release from the python package index**
+
+Use pip2 for python2 packages.
+```bash
+$ pip2 install -r requirements.txt
+```
+
+which include just [Scapy](https://github.com/secdev/scapy) framework
+
+### **Use**
+
+Just run the python2 script (with admin privileges)
+```bash
+$ sudo python2 dns_server_mt.py
+```
