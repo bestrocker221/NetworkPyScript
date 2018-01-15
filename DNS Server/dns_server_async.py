@@ -32,20 +32,21 @@ class FWToServerThread(Thread):
 	def run(self):
 		while self.go:
 			try:
-				print("new query? ")
-				print("NOW NEW QUERY IS : {}".format(new_query))
-				if len(new_query) > 0:
+				print("NEW QUERY IS EMPTY?: " + str(self.new_query.empty()))
+				if not self.new_query.empty():
 					print("NEW QUERY > 0")
-					for qname in new_query.keys():
-						raw_dns_query = new_query[qname]["raw"]
-						host_addr = new_query[qname]["addr"]
+					for i in self.new_query.qsize():
+						elem = self.new_query.get()
+						qname = elem["qname"]
+						raw_dns_query = elem["raw"]
+						host_addr = elem["addr"]
 						dns_server_response = search_cache(qname)
 						if dns_server_response: 	#cached response
-							rcvd_query.update({qname:{"raw":dns_server_response, "addr":host_addr}})
+							self.rcvd_query.put({"qname":qname, "raw":dns_server_response, "addr":host_addr})
 						else: 						#non cached
 							req = IP(dst=DNS_SERVER)/UDP(dport=53)/raw_dns_query
 							send(req, verbose=False)
-						del new_query[qname]
+						elem.task_done()
 				else:
 					sleep(2.01)
 			except KeyboardInterrupt:
@@ -72,19 +73,20 @@ class FWToClientThread(Thread):
 	def run(self):
 		while self.go:
 			try:
-				print("RCV Query? ")
-				print("NOW RCV QUERY IS : {}".format(rcvd_query))
-				if len(rcvd_query) > 0:
+				print("RCV QUERY IS EMPTY?: " + str(self.rcvd_query.empty()))
+				if not self.rcvd_query.empty():
 					print("RCVD QUERY > 0")
-					for qname in rcvd_query.keys():
-						raw_dns_query = new_query[qname]["raw"]
-						host_addr = new_query[qname]["addr"]
+					for i in self.rcvd_query.qsize():
+						elem = self.rcvd_query.get()
+						qname = elem["qname"]
+						raw_dns_query = elem["raw"]
+						host_addr = elem["addr"]
 						msg = Ether()/IP(dst=host_addr[0])/UDP(sport=53,dport=host_addr[1])/raw_dns_query
 						try:
 							sendp(msg, verbose=False)
-							del rcvd_query[qname]
 						except Exception as e:
 							print("{}".format(e))
+						elem.task_done()
 				else:
 					sleep(2.01)
 			except KeyboardInterrupt:
@@ -94,6 +96,13 @@ class FWToClientThread(Thread):
 				self.terminate()
 		self.terminate()
 
+
+#Queue style
+#{	
+#	"qname":qname,
+#	"raw":raw,
+#	"addr": addr
+#}
 class UDPServerProcess(Process):
 	def __init__(self):
 		Process.__init__(self)
@@ -102,8 +111,8 @@ class UDPServerProcess(Process):
 		self.BUFFER_SIZE = 1024
 		self.new_query = Queue()
 		self.rcvd_query = Queue()
-		self.server_fw__thread = FWToServerThread(new_query, rcvd_query)
-		self.client_fw_thread = FWToClientThread(new_query, rcvd_query)
+		self.server_fw__thread = FWToServerThread(self.new_query, self.rcvd_query)
+		self.client_fw_thread = FWToClientThread(self.new_query, self.rcvd_query)
 		self.server_fw__thread.start()
 		self.client_fw_thread.start()
 		print("UDP DNS server started on port 53")
@@ -123,7 +132,7 @@ class UDPServerProcess(Process):
 				data = DNS(data)
 				if data and data.haslayer(DNS):
 					qname = data.qd.qname
-					data.show()
+					#data.show()
 					if data.qr == 1: #query response
 						try:
 							print("UDP [" + str(addr[0]) + ":" + str(addr[1]) +"]" + " ANSWER FOR " 
@@ -132,12 +141,14 @@ class UDPServerProcess(Process):
 							print("NONE TYPE ?? FOR " + data.qd.qname)
 						print("CACHING " +str(qname))
 						cache.update({qname:{"raw":data}})      #cache response in memory
-						rcvd_query.update({qname:{"raw":data, "addr":addr}}) #add new received query to dispatch
-						print("now RCVD IS {}".format(rcvd_query))
+						self.rcvd_query.put({"qname":qname,"raw":data, "addr":addr}) #add new received query to dispatch
+						#print("now RCVD IS {}".format(self.rcvd_query))
 					elif data.qr == 0: #new query
 						print("UDP [" + str(addr[0]) + ":" + str(addr[1]) +"]" + " REQUESTED: " + qname)
-						new_query.update({qname:{"raw":data, "addr":addr}}) 	#add new query to forward to server
-						print("NOW NEW QUERY IS : {}".format(new_query))
+						self.new_query.put({"qname":qname,"raw":data, "addr":addr}) 	#add new query to forward to server
+						print("ELEMENTO AGGIUNTO A NEW QUERY. SIZE: " + str(self.new_query.qsize()))
+						#print("NOW NEW QUERY IS : {}".format(self.new_query))
+
 			except AttributeError as a:
 				print("{}".format(a))
 			except KeyboardInterrupt:
